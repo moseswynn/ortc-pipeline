@@ -1,0 +1,200 @@
+name: Run Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Which benchmark to run"
+        required: true
+        type: choice
+        options:
+          - both
+          - rest
+          - ortc
+        default: both
+      batch_sizes:
+        description: "Comma-separated batch sizes"
+        required: false
+        default: "1000,10000,100000"
+      aws_region:
+        description: "AWS region"
+        required: false
+        default: "us-east-1"
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+
+jobs:
+  benchmark:
+    name: Trigger Benchmark Tasks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.5"
+
+      - name: Generate benchmark run ID
+        id: run
+        run: |
+          RUN_ID=$(uuidgen)
+          echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "Benchmark run ID: $RUN_ID"
+
+      - name: Ensure Terraform state bucket exists
+        run: scripts/bootstrap-tfstate.sh
+
+      - name: Terraform Init & read outputs
+        working-directory: infra
+        id: tf
+        run: |
+          terraform init
+          echo "cluster=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "bench_rest_task=$(terraform output -raw bench_rest_task_definition)" >> "$GITHUB_OUTPUT"
+          echo "bench_ortc_task=$(terraform output -raw bench_ortc_task_definition)" >> "$GITHUB_OUTPUT"
+          echo "private_subnets=$(terraform output -json private_subnets | jq -r 'join(",")')" >> "$GITHUB_OUTPUT"
+          echo "public_subnets=$(terraform output -json public_subnets | jq -r 'join(",")')" >> "$GITHUB_OUTPUT"
+          echo "sg=$(terraform output -raw ecs_security_group)" >> "$GITHUB_OUTPUT"
+          echo "s3_bucket=$(terraform output -raw s3_results_bucket)" >> "$GITHUB_OUTPUT"
+          echo "rest_alb_url=$(terraform output -raw rest_alb_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Run REST benchmark
+        if: inputs.mode == 'rest' || inputs.mode == 'both'
+        id: rest
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --region "$AWS_REGION" \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --task-definition "${{ steps.tf.outputs.bench_rest_task }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.tf.outputs.private_subnets }}],securityGroups=[${{ steps.tf.outputs.sg }}],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"bench-rest\",\"command\":[\"--mode\",\"rest\",\"--server-host\",\"${{ steps.tf.outputs.rest_alb_url }}\",\"--batch-sizes\",\"${{ inputs.batch_sizes }}\",\"--output\",\"s3://${{ steps.tf.outputs.s3_bucket }}/data\",\"--run-id\",\"${{ steps.run.outputs.id }}\"]}]}" \
+            --count 1 \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Task ARN: $TASK_ARN"
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Discover ORTC server IP
+        if: inputs.mode == 'ortc' || inputs.mode == 'both'
+        id: ortc_ip
+        run: |
+          ORTC_TASK_ARN=$(aws ecs list-tasks \
+            --region "$AWS_REGION" \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --service-name ortc-server \
+            --query 'taskArns[0]' --output text)
+
+          ORTC_ENI=$(aws ecs describe-tasks \
+            --region "$AWS_REGION" \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --tasks "$ORTC_TASK_ARN" \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
+
+          ORTC_IP=$(aws ec2 describe-network-interfaces \
+            --region "$AWS_REGION" \
+            --network-interface-ids "$ORTC_ENI" \
+            --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
+
+          echo "ORTC server IP: $ORTC_IP"
+          echo "ip=$ORTC_IP" >> "$GITHUB_OUTPUT"
+
+      - name: Run ORTC benchmark
+        if: inputs.mode == 'ortc' || inputs.mode == 'both'
+        id: ortc
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --region "$AWS_REGION" \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --task-definition "${{ steps.tf.outputs.bench_ortc_task }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.tf.outputs.public_subnets }}],securityGroups=[${{ steps.tf.outputs.sg }}],assignPublicIp=ENABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"bench-ortc\",\"command\":[\"--mode\",\"ortc\",\"--server-host\",\"http://${{ steps.ortc_ip.outputs.ip }}:8080\",\"--batch-sizes\",\"${{ inputs.batch_sizes }}\",\"--output\",\"s3://${{ steps.tf.outputs.s3_bucket }}/data\",\"--run-id\",\"${{ steps.run.outputs.id }}\"]}]}" \
+            --count 1 \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Task ARN: $TASK_ARN"
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for REST benchmark to complete
+        if: inputs.mode == 'rest' || inputs.mode == 'both'
+        run: |
+          echo "Waiting for REST bench task to stop..."
+          aws ecs wait tasks-stopped \
+            --region "$AWS_REGION" \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --tasks "${{ steps.rest.outputs.task_arn }}"
+          echo "REST bench task completed."
+
+      - name: Wait for ORTC benchmark to complete
+        if: inputs.mode == 'ortc' || inputs.mode == 'both'
+        run: |
+          echo "Waiting for ORTC bench task to stop..."
+          aws ecs wait tasks-stopped \
+            --region "$AWS_REGION" \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --tasks "${{ steps.ortc.outputs.task_arn }}"
+          echo "ORTC bench task completed."
+
+      - name: Extract REST metrics from CloudWatch
+        if: inputs.mode == 'rest' || inputs.mode == 'both'
+        run: |
+          mkdir -p metrics
+          TASK_ID=$(echo "${{ steps.rest.outputs.task_arn }}" | awk -F'/' '{print $NF}')
+
+          aws logs get-log-events \
+            --region "$AWS_REGION" \
+            --log-group-name "/ecs/ortc-pipeline/bench" \
+            --log-stream-name "bench-rest/bench-rest/${TASK_ID}" \
+            --query 'events[*].message' --output text \
+          | sed -n '/BENCH_METRICS_START/,/BENCH_METRICS_END/p' \
+          | grep -v 'BENCH_METRICS_' \
+          > metrics/rest-metrics.json
+
+          echo "### REST Benchmark Metrics" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat metrics/rest-metrics.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Extract ORTC metrics from CloudWatch
+        if: inputs.mode == 'ortc' || inputs.mode == 'both'
+        run: |
+          mkdir -p metrics
+          TASK_ID=$(echo "${{ steps.ortc.outputs.task_arn }}" | awk -F'/' '{print $NF}')
+
+          aws logs get-log-events \
+            --region "$AWS_REGION" \
+            --log-group-name "/ecs/ortc-pipeline/bench" \
+            --log-stream-name "bench-ortc/bench-ortc/${TASK_ID}" \
+            --query 'events[*].message' --output text \
+          | sed -n '/BENCH_METRICS_START/,/BENCH_METRICS_END/p' \
+          | grep -v 'BENCH_METRICS_' \
+          > metrics/ortc-metrics.json
+
+          echo "### ORTC Benchmark Metrics" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat metrics/ortc-metrics.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-metrics-${{ steps.run.outputs.id }}
+          path: metrics/
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Run ID:** \`${{ steps.run.outputs.id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**S3 data path:** \`s3://${{ steps.tf.outputs.s3_bucket }}/data/${{ steps.run.outputs.id }}/\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Mode:** ${{ inputs.mode }} | **Batch sizes:** ${{ inputs.batch_sizes }}" >> "$GITHUB_STEP_SUMMARY"
