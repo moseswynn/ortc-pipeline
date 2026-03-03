@@ -154,9 +154,9 @@ jobs:
             --region "$AWS_REGION" \
             --log-group-name "/ecs/ortc-pipeline/bench" \
             --log-stream-name "bench-rest/bench-rest/${TASK_ID}" \
-            --query 'events[*].message' --output text \
-          | sed -n '/BENCH_METRICS_START/,/BENCH_METRICS_END/p' \
-          | grep -v 'BENCH_METRICS_' \
+            --output json \
+          | jq -r '.events[].message' \
+          | sed -n '/BENCH_METRICS_START/,/BENCH_METRICS_END/{/BENCH_METRICS_/d;p}' \
           > metrics/rest-metrics.json
 
           echo "### REST Benchmark Metrics" >> "$GITHUB_STEP_SUMMARY"
@@ -174,9 +174,9 @@ jobs:
             --region "$AWS_REGION" \
             --log-group-name "/ecs/ortc-pipeline/bench" \
             --log-stream-name "bench-ortc/bench-ortc/${TASK_ID}" \
-            --query 'events[*].message' --output text \
-          | sed -n '/BENCH_METRICS_START/,/BENCH_METRICS_END/p' \
-          | grep -v 'BENCH_METRICS_' \
+            --output json \
+          | jq -r '.events[].message' \
+          | sed -n '/BENCH_METRICS_START/,/BENCH_METRICS_END/{/BENCH_METRICS_/d;p}' \
           > metrics/ortc-metrics.json
 
           echo "### ORTC Benchmark Metrics" >> "$GITHUB_STEP_SUMMARY"
