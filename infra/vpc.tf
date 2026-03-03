@@ -114,12 +114,13 @@ resource "aws_security_group" "ecs" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  # ORTC signaling (HTTP)
+  # ORTC signaling (HTTP) — open to the internet so bench tasks can
+  # connect via the server's public IP for realistic latency measurement.
   ingress {
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   # WebRTC/SCTP UDP range (ORTC data channels)
