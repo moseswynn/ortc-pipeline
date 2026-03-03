@@ -51,8 +51,8 @@ jobs:
           echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "Benchmark run ID: $RUN_ID"
 
-      - name: Ensure Terraform state bucket exists
-        run: scripts/bootstrap-tfstate.sh
+      - name: Bootstrap (S3 state bucket + ECR repos)
+        run: scripts/bootstrap.sh
 
       - name: Terraform Init & read outputs
         working-directory: infra

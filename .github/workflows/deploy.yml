@@ -41,6 +41,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Bootstrap (S3 state bucket + ECR repos)
+        run: scripts/bootstrap.sh
+
       - uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies & seed database
@@ -96,8 +99,8 @@ jobs:
         with:
           terraform_version: "~> 1.5"
 
-      - name: Ensure Terraform state bucket exists
-        run: scripts/bootstrap-tfstate.sh
+      - name: Bootstrap (S3 state bucket + ECR repos)
+        run: scripts/bootstrap.sh
 
       - name: Terraform Init
         working-directory: infra
