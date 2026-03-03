@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,23 +40,34 @@ async def run_benchmark(
     all_metrics = []
     for size in batch_sizes:
         print(f"[{mode}] Benchmarking batch_size={size}...")
-        if mode == "rest":
-            records, metrics = await rest_fetch(server_host, batch_size=size)
-        elif mode == "ortc":
-            records, metrics = await ortc_fetch(server_host, batch_size=size)
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
+        try:
+            if mode == "rest":
+                records, metrics = await rest_fetch(server_host, batch_size=size)
+            elif mode == "ortc":
+                records, metrics = await ortc_fetch(server_host, batch_size=size)
+            else:
+                raise ValueError(f"Unknown mode: {mode}")
 
-        metrics["run_id"] = run_id
-        metrics["timestamp"] = datetime.now(timezone.utc).isoformat()
-        all_metrics.append(metrics)
-        print(f"  -> {metrics['records_received']} records in {metrics['total_transfer_time_s']}s "
-              f"({metrics['records_per_sec']} rec/s, TTFR={metrics['time_to_first_record_s']}s)")
+            metrics["run_id"] = run_id
+            metrics["timestamp"] = datetime.now(timezone.utc).isoformat()
+            all_metrics.append(metrics)
+            print(f"  -> {metrics['records_received']} records in {metrics['total_transfer_time_s']}s "
+                  f"({metrics['records_per_sec']} rec/s, TTFR={metrics['time_to_first_record_s']}s)")
 
-        if s3_output:
-            key_base = s3_output.rstrip("/")
-            data_key = f"{key_base}/{run_id}/{mode}/{size}.ndjson"
-            _upload_records_to_s3(records, data_key)
+            if s3_output:
+                key_base = s3_output.rstrip("/")
+                data_key = f"{key_base}/{run_id}/{mode}/{size}.ndjson"
+                _upload_records_to_s3(records, data_key)
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            traceback.print_exc()
+            all_metrics.append({
+                "mode": mode,
+                "batch_size": size,
+                "run_id": run_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": str(e),
+            })
 
     return all_metrics
 
