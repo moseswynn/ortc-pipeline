@@ -35,11 +35,20 @@ async def offer_handler(request: web.Request) -> web.Response:
 
     @pc.on("datachannel")
     def on_datachannel(channel):
-        logger.info("Data channel established: %s", channel.label)
+        logger.info("Data channel received: %s (readyState=%s)", channel.label, channel.readyState)
 
-        @channel.on("open")
-        def on_open():
+        def _start_streaming():
+            logger.info("Data channel open, starting to stream records")
             asyncio.ensure_future(_stream_records(channel, batch_size))
+
+        # The channel may already be open by the time the datachannel event
+        # fires (race condition in aiortc when SCTP transport opens quickly).
+        if channel.readyState == "open":
+            _start_streaming()
+        else:
+            @channel.on("open")
+            def on_open():
+                _start_streaming()
 
     await pc.setRemoteDescription(offer)
     answer = await pc.createAnswer()
@@ -53,27 +62,32 @@ async def offer_handler(request: web.Request) -> web.Response:
 
 async def _stream_records(channel, batch_size: int) -> None:
     """Stream records over the data channel."""
-    total = min(batch_size, count_records())
-    # Send metadata first
-    channel.send(json.dumps({"type": "meta", "total": total}))
+    try:
+        total = min(batch_size, count_records())
+        logger.info("Streaming %d records (requested %d)", total, batch_size)
 
-    page_size = 1000
-    offset = 0
-    sent = 0
-    while offset < total:
-        limit = min(page_size, total - offset)
-        rows = fetch_records(offset, limit)
-        for r in rows:
-            record = Record(**{**r, "is_active": bool(r["is_active"])})
-            channel.send(record.serialize())
-            sent += 1
+        # Send metadata first
+        channel.send(json.dumps({"type": "meta", "total": total}))
 
-        offset += limit
-        # Yield to event loop periodically to avoid starving other tasks
-        await asyncio.sleep(0)
+        page_size = 1000
+        offset = 0
+        sent = 0
+        while offset < total:
+            limit = min(page_size, total - offset)
+            rows = fetch_records(offset, limit)
+            for r in rows:
+                record = Record(**{**r, "is_active": bool(r["is_active"])})
+                channel.send(record.serialize())
+                sent += 1
 
-    channel.send(json.dumps({"type": "done", "sent": sent}))
-    logger.info("Streamed %d records", sent)
+            offset += limit
+            # Yield to event loop periodically to avoid starving other tasks
+            await asyncio.sleep(0)
+
+        channel.send(json.dumps({"type": "done", "sent": sent}))
+        logger.info("Streamed %d records", sent)
+    except Exception:
+        logger.exception("Error streaming records")
 
 
 async def health_handler(request: web.Request) -> web.Response:
