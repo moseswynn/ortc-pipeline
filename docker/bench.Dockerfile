@@ -6,6 +6,8 @@ RUN apt-get update && \
         libopus-dev libvpx-dev pkg-config gcc && \
     rm -rf /var/lib/apt/lists/*
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ import boto3
 
 from src.ortc.client import fetch_all_records as ortc_fetch
 from src.rest.client import fetch_all_records as rest_fetch
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
 def _upload_records_to_s3(records, s3_path: str) -> None:

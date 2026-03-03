@@ -3,12 +3,14 @@ import json
 import logging
 
 from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 
 from src.db import count_records, fetch_records
 from src.models import Record
 
 logger = logging.getLogger(__name__)
+
+ICE_SERVERS = [RTCIceServer(urls=["stun:stun.l.google.com:19302"])]
 
 pcs: set[RTCPeerConnection] = set()
 
@@ -20,7 +22,8 @@ async def offer_handler(request: web.Request) -> web.Response:
 
     offer = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
 
-    pc = RTCPeerConnection()
+    config = RTCConfiguration(iceServers=ICE_SERVERS)
+    pc = RTCPeerConnection(configuration=config)
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
