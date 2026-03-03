@@ -84,6 +84,44 @@ Each benchmark run is isolated by its UUID, so results from multiple runs never 
 | `total_transfer_time_s` | Total wall-clock time for the entire batch transfer |
 | `records_per_sec` | Throughput (records received / total time) |
 
+## Benchmark Results
+
+Benchmarked on AWS ECS Fargate (us-east-1), both pipelines transferring JSON-serialized records from a pre-seeded SQLite database. REST uses paginated HTTP requests through an ALB; ORTC uses WebRTC data channels over the public internet via aiortc.
+
+### Throughput (records/sec)
+
+| Batch Size | REST | ORTC | REST Advantage |
+|------------|------|------|----------------|
+| 1,000 | 2,214 rec/s | 89 rec/s | **25x** |
+| 10,000 | 19,799 rec/s | 565 rec/s | **35x** |
+| 100,000 | 16,934 rec/s | 1,678 rec/s | **10x** |
+
+### Latency
+
+| Batch Size | REST TTFR | ORTC TTFR | REST Total | ORTC Total |
+|------------|-----------|-----------|------------|------------|
+| 1,000 | 0.45s | 11.0s | 0.45s | 11.2s |
+| 10,000 | 0.06s | 10.6s | 0.51s | 17.7s |
+| 100,000 | 0.05s | 10.7s | 5.9s | 59.6s |
+
+### Findings
+
+REST outperforms ORTC data channels by 10-35x on throughput and delivers first records in under 500ms vs ~11 seconds for ORTC. The ORTC time-to-first-record is dominated by ICE negotiation and DTLS handshake overhead, which is a fixed ~10s cost regardless of batch size.
+
+**Why REST wins for bulk data transfer:**
+
+1. **aiortc is pure Python** — The entire WebRTC stack (ICE, DTLS, SCTP) is implemented in Python, including cryptographic operations. The REST stack (uvicorn/httptools, httpx) delegates to optimized C libraries, giving it a massive per-message performance advantage.
+
+2. **SCTP doesn't provide a speed advantage over TCP** — Data channels use SCTP-over-DTLS-over-UDP, which reimplements TCP's reliability and ordering guarantees in userspace with additional framing overhead. There is no benefit from UDP's lower overhead because SCTP adds it all back.
+
+3. **Per-message overhead** — Each record is sent as a separate SCTP message with its own framing and encryption. REST batches up to 1,000 records per HTTP response, amortizing protocol overhead across many records.
+
+4. **Connection setup cost** — ICE candidate gathering, connectivity checks, and the DTLS handshake add ~10 seconds of fixed latency before any data flows. A TCP handshake takes milliseconds.
+
+5. **WebRTC solves a different problem** — Data channels were designed for low-latency peer-to-peer communication through NATs (gaming, video chat, real-time collaboration), not high-throughput server-to-client bulk transfer over managed infrastructure.
+
+**What would actually beat REST for this use case:** gRPC with Protobuf (binary serialization + HTTP/2 streaming), Apache Arrow Flight (columnar zero-copy format), or WebSockets with a binary encoding (single connection, server-push streaming).
+
 ## Design Decisions
 
 - **JSON serialization** for both pipelines — apples-to-apples comparison
