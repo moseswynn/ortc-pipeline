@@ -3,21 +3,6 @@ output "rest_alb_url" {
   value       = "http://${aws_lb.rest.dns_name}"
 }
 
-output "ecr_rest_server" {
-  description = "ECR repository URL for rest-server"
-  value       = aws_ecr_repository.rest_server.repository_url
-}
-
-output "ecr_ortc_server" {
-  description = "ECR repository URL for ortc-server"
-  value       = aws_ecr_repository.ortc_server.repository_url
-}
-
-output "ecr_bench" {
-  description = "ECR repository URL for bench"
-  value       = aws_ecr_repository.bench.repository_url
-}
-
 output "s3_results_bucket" {
   description = "S3 bucket for benchmark results"
   value       = aws_s3_bucket.results.id
